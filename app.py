@@ -12,12 +12,12 @@ from aiohttp import web
 from aiohttp.web_middlewares import middleware
 
 # ============================================================
-# MODEL PATH (HUGGINGFACE FIXED)
+# MODEL PATH (TINYLLAMA GGUF)
 # ============================================================
 from huggingface_hub import hf_hub_download
 
 model_path = hf_hub_download(
-    repo_id="MazenMohamed10/Cura_Mind_v2",
+    repo_id="MazenMohamed10/Cura_Mind_v3",
     filename="model.gguf",
     cache_dir="/tmp"
 )
@@ -44,13 +44,14 @@ logger = logging.getLogger(__name__)
 # ============================================================
 PORT = int(os.environ.get("PORT", 10000))
 
+# 🔥 optimized for Render free
 N_THREADS = 2
 N_CTX = 256
-N_BATCH = 128
-MAX_TOKENS = 80
+N_BATCH = 64
+MAX_TOKENS = 64
 MAX_Q_LEN = 350
 RATE_LIMIT = 10
-TIMEOUT_SEC = 25
+TIMEOUT_SEC = 20
 
 # ============================================================
 # EXECUTOR
@@ -85,8 +86,10 @@ llama = None
 
 def get_model():
     global llama
+
     if llama is None:
-        logger.info("📦 Loading model...")
+        logger.info("📦 Loading TinyLlama model...")
+
         llama = Llama(
             model_path=model_path,
             n_ctx=N_CTX,
@@ -96,7 +99,9 @@ def get_model():
             use_mlock=False,
             verbose=False,
         )
-        logger.info("✅ Model loaded successfully")
+
+        logger.info("✅ TinyLlama loaded successfully")
+
     return llama
 
 # ============================================================
@@ -114,6 +119,7 @@ BASE_SYSTEM = (
 def detect_language(text: str) -> str:
     ar = sum(1 for c in text if '\u0600' <= c <= '\u06FF')
     total = sum(1 for c in text if c.isalpha())
+
     return "arabic" if total and ar / total > 0.3 else "english"
 
 # ============================================================
@@ -124,42 +130,46 @@ def classify(q: str) -> str:
 
     if any(x in q for x in ["calorie", "protein", "سعرات"]):
         return "nutrition"
+
     if any(x in q for x in ["how", "steps", "طريقة", "كيف"]):
         return "steps"
+
     if any(x in q for x in ["compare", "vs", "بين"]):
         return "compare"
+
     if any(x in q for x in ["recipe", "cook", "وصفة"]):
         return "recipe"
+
     return "general"
 
 # ============================================================
-# PROMPT
+# PROMPT (TINYLLAMA FORMAT)
 # ============================================================
 def build_prompt(question: str, lang: str, qtype: str) -> str:
+
     lang_rule = (
-        "Reply ONLY in Arabic." if lang == "arabic"
+        "Reply ONLY in Arabic."
+        if lang == "arabic"
         else "Reply ONLY in English."
     )
 
     return (
-        "<|system|>\n"
-        f"{BASE_SYSTEM}\n{lang_rule}\n"
-        "<|end|>\n"
-        "<|user|>\n"
-        f"{question}\n"
-        "<|end|>\n"
-        "<|assistant|>\n"
+        f"{BASE_SYSTEM}\n"
+        f"{lang_rule}\n\n"
+        f"User: {question}\n"
+        f"Assistant:"
     )
 
 # ============================================================
 # STOP TOKENS
 # ============================================================
-_STOP = ["<|end|>"]
+_STOP = ["User:", "</s>"]
 
 # ============================================================
 # INFERENCE
 # ============================================================
 def _run(llm, prompt: str):
+
     return llm(
         prompt=prompt,
         max_tokens=MAX_TOKENS,
@@ -172,11 +182,17 @@ def _run(llm, prompt: str):
     )
 
 async def generate(prompt: str):
+
     loop = asyncio.get_running_loop()
     llm = get_model()
 
     return await asyncio.wait_for(
-        loop.run_in_executor(_executor, _run, llm, prompt),
+        loop.run_in_executor(
+            _executor,
+            _run,
+            llm,
+            prompt
+        ),
         timeout=TIMEOUT_SEC
     )
 
@@ -184,6 +200,7 @@ async def generate(prompt: str):
 # CLEAN OUTPUT
 # ============================================================
 def clean(out) -> str:
+
     if isinstance(out, dict):
         out = out.get("choices", [{}])[0].get("text", "")
 
@@ -193,9 +210,12 @@ def clean(out) -> str:
     prev_blank = False
 
     for l in text.splitlines():
+
         blank = not l.strip()
+
         if blank and prev_blank:
             continue
+
         lines.append(l)
         prev_blank = blank
 
@@ -206,6 +226,7 @@ def clean(out) -> str:
 # ============================================================
 @middleware
 async def cors(req, handler):
+
     if req.method == "OPTIONS":
         return web.Response(headers={
             "Access-Control-Allow-Origin": "*",
@@ -215,23 +236,32 @@ async def cors(req, handler):
 
     resp = await handler(req)
     resp.headers["Access-Control-Allow-Origin"] = "*"
+
     return resp
 
 # ============================================================
 # MAIN API
 # ============================================================
 async def ask(req):
+
     ip = req.remote or "x"
 
     if is_rate_limited(ip):
-        return web.json_response({"error": "rate limit"}, status=429)
+        return web.json_response(
+            {"error": "rate limit"},
+            status=429
+        )
 
     try:
         body = await req.json()
+
         q = (body.get("question") or "").strip()[:MAX_Q_LEN]
 
         if not q:
-            return web.json_response({"error": "empty"}, status=400)
+            return web.json_response(
+                {"error": "empty"},
+                status=400
+            )
 
         lang = detect_language(q)
         qtype = classify(q)
@@ -239,6 +269,7 @@ async def ask(req):
         prompt = build_prompt(q, lang, qtype)
 
         t0 = time.monotonic()
+
         out = await generate(prompt)
 
         text = clean(out)
@@ -247,39 +278,71 @@ async def ask(req):
             "response": text,
             "type": qtype,
             "lang": lang,
-            "time_ms": int((time.monotonic() - t0) * 1000)
+            "time_ms": int(
+                (time.monotonic() - t0) * 1000
+            )
         })
 
     except asyncio.TimeoutError:
-        return web.json_response({"error": "timeout"}, status=504)
+
+        return web.json_response(
+            {"error": "timeout"},
+            status=504
+        )
 
     except Exception as e:
+
         logger.exception(e)
-        return web.json_response({"error": "server error"}, status=500)
+
+        return web.json_response(
+            {"error": "server error"},
+            status=500
+        )
 
 # ============================================================
 # HEALTH
 # ============================================================
 async def health(req):
+
     mem = None
+
     if HAS_PSUTIL:
-        mem = psutil.Process().memory_info().rss / 1024 / 1024
+        mem = (
+            psutil.Process()
+            .memory_info()
+            .rss / 1024 / 1024
+        )
 
     return web.json_response({
         "status": "ok",
         "ctx": N_CTX,
         "threads": N_THREADS,
         "memory_mb": mem,
-        "uptime": round(time.monotonic() - _start_time)
+        "uptime": round(
+            time.monotonic() - _start_time
+        )
     })
 
 # ============================================================
 # APP
 # ============================================================
-app = web.Application(middlewares=[cors])
+app = web.Application(
+    middlewares=[cors]
+)
+
 app.router.add_post("/ask", ask)
 app.router.add_get("/health", health)
 
+# ============================================================
+# START
+# ============================================================
 if __name__ == "__main__":
-    logger.info("🚀 Starting server...")
-    web.run_app(app, host="0.0.0.0", port=PORT, access_log=False)
+
+    logger.info("🚀 Starting TinyLlama API Server...")
+
+    web.run_app(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        access_log=False
+    )
