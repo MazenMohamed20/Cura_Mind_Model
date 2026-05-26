@@ -18,7 +18,7 @@ from huggingface_hub import hf_hub_download
  
 # FIX 1: renamed model_path → LLAMA_MODEL_PATH so all references are consistent
 LLAMA_MODEL_PATH = hf_hub_download(
-    repo_id="MazenMohamed10/Cura_Mind_v3",
+    repo_id="MazenMohamed10/Cura_Mind_Model",
     filename="model.gguf",
     cache_dir="/tmp"
 )
