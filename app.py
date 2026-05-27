@@ -1,12 +1,3 @@
-# -*- coding: utf-8 -*-
-import os
-import re
-import sys
-import time
-import asyncio
-import logging
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from aiohttp import web
 from aiohttp.web_middlewares import middleware
@@ -15,20 +6,20 @@ from aiohttp.web_middlewares import middleware
 # MODEL PATH (TINYLLAMA GGUF)
 # ============================================================
 from huggingface_hub import hf_hub_download
- 
+
 # FIX 1: renamed model_path → LLAMA_MODEL_PATH so all references are consistent
 LLAMA_MODEL_PATH = hf_hub_download(
     repo_id="MazenMohamed10/Cura_Mind_Model",
     filename="model.gguf",
     cache_dir="/tmp"
 )
- 
+
 try:
     import psutil
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
- 
+
 logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout,
@@ -36,7 +27,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logger = logging.getLogger(__name__)
- 
+
 # ============================================================
 #  CONFIG
 # ============================================================
@@ -48,18 +39,18 @@ N_BATCH      = 128
 MAX_Q_LEN    = 600
 TIMEOUT_SEC  = 90
 RATE_LIMIT   = 10
- 
+
 _executor   = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llama")
 _start_time = time.monotonic()
 # FIX 7: keep only the Semaphore for async queuing; the single-worker pool already
 # serialises inference, so having both was redundant double-locking.
 _sem        = asyncio.Semaphore(1)
- 
+
 # ============================================================
 #  RATE LIMITER
 # ============================================================
 _rate_store: dict[str, deque] = {}
- 
+
 def is_rate_limited(ip: str) -> bool:
     """
     Returns True if the IP has exceeded RATE_LIMIT requests in the last 60 s.
@@ -76,27 +67,27 @@ def is_rate_limited(ip: str) -> bool:
     """
     now = time.monotonic()
     window = 60.0
- 
+
     if ip not in _rate_store:
         _rate_store[ip] = deque()
- 
+
     dq = _rate_store[ip]
- 
+
     # Remove timestamps outside the rolling window
     while dq and now - dq[0] > window:
         dq.popleft()
  
     if len(dq) >= RATE_LIMIT:
         return True
- 
+
     # Record this request
     dq.append(now)
- 
+
     # Evict the IP entry only after recording, and only when truly empty,
     # so we don't hold empty deques in memory indefinitely.
     if not dq:
         del _rate_store[ip]
- 
+
     return False
  
 # ============================================================
@@ -124,8 +115,8 @@ except ImportError:
 except Exception as e:
     logger.error(f"❌ Failed to load model: {e}")
     sys.exit(1)
- 
- 
+
+
 # ============================================================
 #  FORMAT INSTRUCTIONS
 # ============================================================
@@ -159,7 +150,7 @@ FORMAT_INSTRUCTIONS = {
         "Then add: 💡 **You might also ask:** or 💡 **قد يهمك أيضاً:** with one related question."
     ),
 }
- 
+
 # FIX 9: Removed the directive "Never say 'consult a doctor/specialist'" — for a
 # health/mental-wellness product this is a safety liability. Medical questions about
 # dosages, medications, or mental-health crises must be able to recommend professional
@@ -178,8 +169,8 @@ BASE_SYSTEM = (
     "Arabic question → Arabic answer only. English question → English answer only. "
     "Follow the format instruction exactly."
 )
- 
- 
+
+
 # ============================================================
 #  LANGUAGE DETECTION
 # ============================================================
@@ -201,8 +192,8 @@ def detect_language(text: str) -> str:
     if any(kw in lower for kw in arabic_keywords):
         return "arabic"
     return "english"
- 
- 
+
+
 # ============================================================
 #  INPUT SANITIZATION
 # ============================================================
@@ -210,13 +201,13 @@ _INJECT_TOKENS = (
     "<|begin_of_text|>", "<|eot_id|>", "<|end_of_text|>",
     "<|start_header_id|>", "<|end_header_id|>",
 )
- 
+
 def sanitize(text: str) -> str:
     for tok in _INJECT_TOKENS:
         text = text.replace(tok, "")
     return text.strip()
- 
- 
+
+
 # ============================================================
 #  CLASSIFIER
 # ============================================================
@@ -243,7 +234,7 @@ _RULES: list[tuple[str, frozenset]] = [
         "هل","ممكن","يمكن","هيفيد","يفيد","هيضر","يضر",
     })),
 ]
- 
+
 def classify(question: str) -> str:
     q = question.lower()
     tokens = set(q.split())
@@ -255,8 +246,8 @@ def classify(question: str) -> str:
             elif kw in tokens:
                 return qtype
     return "general"
- 
- 
+
+
 # ============================================================
 #  PROMPT BUILDER
 # ============================================================
@@ -273,9 +264,9 @@ def build_prompt(question: str, qtype: str, lang: str) -> str:
             "Think carefully and be precise and accurate."
         )
         thinking_prompt = "Let me think about this carefully.\n"
- 
+
     system = f"{BASE_SYSTEM}\n\n{lang_instruction}\n\n{FORMAT_INSTRUCTIONS[qtype]}"
- 
+
     return (
         "<|begin_of_text|>"
         "<|start_header_id|>system<|end_header_id|>\n"
@@ -315,7 +306,7 @@ def _run_inference(prompt: str) -> str:
     if hasattr(out, "choices") and out.choices:
         return getattr(out.choices[0], "text", "").strip()
     return ""
- 
+
 async def generate_async(prompt: str, question: str = "") -> str:
     # Semaphore queues async callers; single-worker executor serialises the thread.
     async with _sem:
@@ -328,8 +319,8 @@ async def generate_async(prompt: str, question: str = "") -> str:
         except asyncio.TimeoutError:
             logger.error(f"⏱ Timeout after {TIMEOUT_SEC}s | question: {question[:50]!r}")
             raise RuntimeError(f"Model timed out after {TIMEOUT_SEC}s")
- 
- 
+
+
 # ============================================================
 #  POST-PROCESS
 # ============================================================
@@ -338,7 +329,7 @@ _CHAT_TOKENS = (
     "<|start_header_id|>", "<|end_header_id|>",
     "<|begin_of_text|>",
 )
- 
+
 def clean_response(text: str, lang: str = "english") -> str:
     lines = text.splitlines()
     if lines:
@@ -348,17 +339,17 @@ def clean_response(text: str, lang: str = "english") -> str:
         elif lang == "english" and first.startswith("Let me think"):
             lines = lines[1:]
     text = "\n".join(lines)
- 
+
     if lang == "arabic":
         text = re.sub(r"دعني أفكر في هذا بعناية\.?\n?", "", text)
     else:
         text = re.sub(r"Let me think about this carefully\.?\n?", "", text)
- 
+
     text = text.replace("\\n", "\n").replace("\\t", "\t")
- 
+
     for tok in _CHAT_TOKENS:
         text = text.replace(tok, "")
- 
+
     lines = text.splitlines()
     out, prev_blank = [], False
     for line in lines:
@@ -367,10 +358,10 @@ def clean_response(text: str, lang: str = "english") -> str:
             continue
         out.append(line)
         prev_blank = blank
- 
+
     return "\n".join(out).strip()
- 
- 
+
+
 # ============================================================
 #  CORS MIDDLEWARE
 # ============================================================
@@ -385,8 +376,8 @@ async def cors_middleware(request, handler):
     resp = await handler(request)
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp
- 
- 
+
+
 # ============================================================
 #  HANDLERS
 # ============================================================
@@ -402,9 +393,9 @@ async def handle_question(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON."}, status=400)
- 
+
     question = sanitize((body.get("question") or "").strip())
- 
+
     if not question:
         return web.json_response({"error": "Question is required."}, status=400)
     if len(question) > MAX_Q_LEN:
@@ -412,14 +403,14 @@ async def handle_question(request: web.Request) -> web.Response:
             {"error": f"Question too long (max {MAX_Q_LEN} chars)."},
             status=400,
         )
- 
+
     lang   = detect_language(question)
     qtype  = classify(question)
     prompt = build_prompt(question, qtype, lang)
- 
+
     t0 = time.monotonic()
     logger.info(f"[{qtype.upper()}][{lang}] {question[:80]!r}")
- 
+
     try:
         raw = await generate_async(prompt, question)
     except RuntimeError as e:
@@ -427,26 +418,26 @@ async def handle_question(request: web.Request) -> web.Response:
     except Exception as e:
         logger.exception(f"💥 Inference error | question: {question[:50]!r}")
         return web.json_response({"error": "Model inference failed."}, status=500)
- 
+
     elapsed = time.monotonic() - t0
- 
+
     if not raw:
         return web.json_response(
             {"error": "Empty response. Try rephrasing."},
             status=500,
         )
- 
+
     answer = clean_response(raw, lang)
     logger.info(f"[{qtype.upper()}][{lang}] {elapsed:.2f}s → {answer[:80]!r}")
- 
+
     return web.json_response({
         "response": answer,
         "type":     qtype,
         "lang":     lang,
         "time_ms":  round(elapsed * 1000),
     })
- 
- 
+
+
 async def handle_health(request: web.Request) -> web.Response:
     model_ok = llama is not None
     health: dict = {
@@ -461,10 +452,10 @@ async def handle_health(request: web.Request) -> web.Response:
     if HAS_PSUTIL:
         mem = psutil.Process().memory_info().rss / 1024 / 1024
         health["memory_mb"] = round(mem)
- 
+
     return web.json_response(health, status=200 if model_ok else 503)
- 
- 
+
+
 # ============================================================
 #  GRACEFUL SHUTDOWN
 # ============================================================
@@ -472,8 +463,8 @@ async def on_shutdown(app):
     logger.info("🛑 Shutting down executor...")
     _executor.shutdown(wait=False)
     logger.info("✅ Executor shutdown complete")
- 
- 
+
+
 # ============================================================
 #  APP
 # FIX 5: set client_max_size to prevent multi-MB payloads from being buffered
@@ -486,7 +477,7 @@ app = web.Application(
 app.router.add_post("/ask",    handle_question)
 app.router.add_get("/health",  handle_health)
 app.on_shutdown.append(on_shutdown)
- 
+
 if __name__ == "__main__":
     if not HAS_PSUTIL:
         logger.warning("⚠️  psutil not installed → pip install psutil (optional)")
