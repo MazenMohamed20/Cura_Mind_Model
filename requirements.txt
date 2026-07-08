@@ -1,4 +1,4 @@
 aiohttp==3.9.5
 llama-cpp-python==0.2.90
-huggingface-hub==0.23.4
+huggingface-hub==1.22.0
 psutil==6.0.0
